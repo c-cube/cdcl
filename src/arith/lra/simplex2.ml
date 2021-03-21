@@ -762,8 +762,10 @@ module Make(Var: VAR)
 
   (* gather all relevant lower (resp. upper) bounds for the definition
      of the basic variable [x_i], and collect each relevant variable
-     with [map] into a list. *)
-  let gather_bounds_of_row_ (self:t) (x_i:var_state) ~map ~is_lower : _ list * _ =
+     with [map] into a list.
+     @param get_lower if true, means we select lower bounds of variables
+     with positive coeffs, and upper bounds of variables with negative coeffs. *)
+  let gather_bounds_of_row_ (self:t) (x_i:var_state) ~map ~get_lower : _ list * _ =
     assert (Var_state.is_basic x_i);
     let map_res = ref [] in
     let bounds = ref V_map.empty in
@@ -772,24 +774,24 @@ module Make(Var: VAR)
         if j <> x_i.idx then (
           let c = Matrix.get self.matrix x_i.basic_idx j in
           if Q.(c <> zero) then (
-            match is_lower, Q.(c > zero) with
+            match get_lower, Q.(c > zero) with
             | true, true
             | false, false ->
-              begin match x_j.u_bound with
-                | Some u ->
-                  map_res := (map c x_j u) :: !map_res;
-                  let op = if Q.(u.b_val.eps_factor >= zero) then Op.Leq else Op.Lt in
-                  bounds := V_map.add x_j.var (op, u) !bounds
-                | None -> assert false (* we could increase [x_j]?! *)
-              end
-            | true, false
-            | false, true ->
               begin match x_j.l_bound with
                 | Some l ->
                   map_res := (map c x_j l) :: !map_res;
                   let op = if Q.(l.b_val.eps_factor <= zero) then Op.Geq else Op.Gt in
                   bounds := V_map.add x_j.var (op, l) !bounds
                 | None -> assert false (* we could decrease [x_j]?! *)
+              end
+            | true, false
+            | false, true ->
+              begin match x_j.u_bound with
+                | Some u ->
+                  map_res := (map c x_j u) :: !map_res;
+                  let op = if Q.(u.b_val.eps_factor >= zero) then Op.Leq else Op.Lt in
+                  bounds := V_map.add x_j.var (op, u) !bounds
+                | None -> assert false (* we could increase [x_j]?! *)
               end
           )
         ))
@@ -800,9 +802,9 @@ module Make(Var: VAR)
   let propagate_basic_implied_bounds (self:t) ~on_propagate (x_i:var_state) : unit =
     assert (Var_state.is_basic x_i);
 
-    let lits_of_row_ ~is_lower : V.lit list =
+    let lits_of_row_ ~get_lower : V.lit list =
       let l, _ =
-        gather_bounds_of_row_ self x_i ~is_lower
+        gather_bounds_of_row_ self x_i ~get_lower
           ~map:(fun _ _ bnd -> bnd.b_lit) in
       l
     in
@@ -811,7 +813,7 @@ module Make(Var: VAR)
       if is_lower then (
         if Erat.(bnd.b_val < x_i.l_implied) then (
           (* implied lower bound subsumes this lower bound *)
-          let reason = lits_of_row_ ~is_lower:true in
+          let reason = lits_of_row_ ~get_lower:true in
           on_propagate bnd.b_lit ~reason
         );
         if Erat.(bnd.b_val > x_i.u_implied) then (
@@ -821,21 +823,21 @@ module Make(Var: VAR)
             Log.debugf 50
               (fun k->k"(@[lra.propagate.not@ :lower-bnd-of %a@ :bnd %a :lit %a@ :u-implied %a@])"
                   Var_state.pp x_i Erat.pp bnd.b_val V.pp_lit bnd.b_lit Erat.pp x_i.u_implied);
-            let reason = lits_of_row_ ~is_lower:false in
+            let reason = lits_of_row_ ~get_lower:false in
             on_propagate not_lit ~reason
           | None -> ()
         )
       ) else (
         if Erat.(bnd.b_val > x_i.u_implied) then (
           (* implied upper bound subsumes this upper bound *)
-          let reason = lits_of_row_ ~is_lower:false in
+          let reason = lits_of_row_ ~get_lower:false in
           on_propagate bnd.b_lit ~reason
         );
         if Erat.(bnd.b_val < x_i.l_implied) then (
           (* upper bound is lower than implied lower bound *)
           match V.not_lit bnd.b_lit with
           | Some not_lit ->
-            let reason = lits_of_row_ ~is_lower:true in
+            let reason = lits_of_row_ ~get_lower:true in
             on_propagate not_lit ~reason
           | None -> ()
         )
@@ -1010,7 +1012,9 @@ module Make(Var: VAR)
                       is_lower Var_state.pp x_i);
     assert (Var_state.is_basic x_i);
     let le, bounds =
-      gather_bounds_of_row_ self x_i ~is_lower
+      (* we get explanations for an (implied) upper bound
+         if [bnd] is a lower bound, and conversely *)
+      gather_bounds_of_row_ self x_i ~get_lower:(not is_lower)
         ~map:(fun c v _ -> c, v.var)
     in
 
