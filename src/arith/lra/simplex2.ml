@@ -197,7 +197,8 @@ module Make(Var: VAR)
 
     let zero : t = {base=Q.zero; eps_factor=Q.zero}
 
-    let[@inline] make base eps_factor : t = {base; eps_factor}
+    let[@inline] make base eps_factor : t =
+      if Q.is_real base then {base; eps_factor} else {base; eps_factor=Q.zero}
     let[@inline] make_q x = make x Q.zero
     let[@inline] base t = t.base
     let[@inline] eps_factor t = t.eps_factor
