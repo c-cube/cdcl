@@ -847,6 +847,18 @@ module Make(Var: VAR)
     List.iter process_bount_lit x_i.all_bound_lits;
     ()
 
+  let update_implied_bounds_for_nbasic_
+      (self:t) (vs:var_state) ~on_propagate : unit =
+    (* section 3.2.5: update implied bounds on basic variables that
+               depend on [vs] *)
+    for i = 0 to Matrix.n_rows self.matrix -1 do
+      if Q.(Matrix.get self.matrix i vs.idx <> zero) then (
+        let x_i = Matrix.get_row_var self.matrix i in
+        update_implied_bounds_ self x_i;
+        propagate_basic_implied_bounds self ~on_propagate x_i;
+      );
+    done
+
   let add_constraint ~on_propagate (self:t) (c:Constraint.t) (lit:V.lit) : unit =
     let open Constraint in
 
@@ -898,16 +910,7 @@ module Make(Var: VAR)
              Erat.(vs.value < new_bnd.b_val) then (
             (* line 5: need to update non-basic variable *)
             update_n_basic self vs new_bnd.b_val;
-
-            (* section 3.2.5: update implied bounds on basic variables that
-               depend on [vs] *)
-            for i = 0 to Matrix.n_rows self.matrix -1 do
-              if Q.(Matrix.get self.matrix i vs.idx <> zero) then (
-                let x_i = Matrix.get_row_var self.matrix i in
-                update_implied_bounds_ self x_i;
-                propagate_basic_implied_bounds self ~on_propagate x_i;
-              );
-            done;
+            update_implied_bounds_for_nbasic_ self vs ~on_propagate;
           )
       end
     ) else (
@@ -943,7 +946,8 @@ module Make(Var: VAR)
           if Var_state.is_n_basic vs &&
              Erat.(vs.value > new_bnd.b_val) then (
             (* line 5: need to update non-basic variable *)
-            update_n_basic self vs new_bnd.b_val
+            update_n_basic self vs new_bnd.b_val;
+            update_implied_bounds_for_nbasic_ self vs ~on_propagate;
           )
       end
     )
@@ -1026,11 +1030,14 @@ module Make(Var: VAR)
     let cert = Unsat_cert.unsat_basic x_i (op, bnd) le bounds in
     cert
 
+  let out_ = open_out "pivots"
+
   (* main satisfiability check.
      page 15, figure 3.2 *)
   let check_exn ~on_propagate:_ (self:t) : unit =
     let exception Stop in
     Log.debugf 20 (fun k->k "(@[simplex2.check@ %a@])" pp_stats self);
+      Printf.fprintf out_ "check\n";
     Stat.incr self.stat_check;
 
     let m = self.matrix in
@@ -1068,6 +1075,7 @@ module Make(Var: VAR)
           Log.debugf 50
             (fun k->k "(@[simplex2.pivot@ :basic %a@ :n-basic %a@])"
                 Var_state.pp x_i Var_state.pp x_j);
+          Printf.fprintf out_ "pivot x%d -> x%d\n%!" x_i.idx x_j.idx;
           pivot_and_update self x_i x_j bnd.b_val
         ) else (
           (* line 10 *)
@@ -1091,10 +1099,12 @@ module Make(Var: VAR)
           Log.debugf 50
             (fun k->k "(@[simplex2.pivot@ :basic %a@ :n-basic %a@])"
                 Var_state.pp x_i Var_state.pp x_j);
+          Printf.fprintf out_ "pivot x%d -> x%d\n%!" x_i.idx x_j.idx;
           pivot_and_update self x_i x_j bnd.b_val
         )
       done;
     with Stop ->
+      Printf.fprintf out_ "done\n";
       Log.debugf 50 (fun k->k "(@[simplex2.check.done@])");
       ()
 
