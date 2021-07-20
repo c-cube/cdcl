@@ -544,6 +544,17 @@ module Make(Plugin : PLUGIN)
       List.iter (fun c -> Array.iter cleanup_a_ c.atoms) l;
       !res, steps
 
+    let assert_same_lits store res concl =
+      assert (
+        let ok = same_lits store (Iter.of_list res) (Clause.atoms store concl) in
+        if not ok then (
+          Log.debugf 0
+            (fun k->k"bad proof: res is {@[<hv>%a@]}@ expected conclusion is %a"
+                (Atom.debug_a store) (Array.of_list res)
+                (Clause.debug store) concl);
+        );
+        ok)
+
     let expand store conclusion =
       Log.debugf 5 (fun k -> k "(@[sat.proof.expand@ @[%a@]@])" (Clause.debug store) conclusion);
       match conclusion.cpremise with
@@ -557,11 +568,11 @@ module Make(Plugin : PLUGIN)
         error_res_f "@[empty history for clause@ %a@]" (Clause.debug store) conclusion
       | History [c] ->
         let duplicates, res = find_dups store c in
-        assert (same_lits store (Iter.of_list res) (Clause.atoms store conclusion));
+        assert_same_lits store res conclusion;
         { conclusion; step = Duplicate (c, duplicates) }
       | History (c :: r) ->
         let res, steps = find_pivots store c r in
-        assert (same_lits store (Iter.of_list res) (Clause.atoms store conclusion));
+        assert_same_lits store res conclusion;
         { conclusion; step = Hyper_res {hr_init=c; hr_steps=steps};  }
       | Empty_premise -> raise Solver_intf.No_proof
 
@@ -1214,25 +1225,27 @@ module Make(Plugin : PLUGIN)
    exception Non_redundant
 
    (* can we remove [a] by self-subsuming resolutions with other lits
-      of the learnt clause? *)
-   let lit_redundant (self:t) (abstract_levels:int) (v:var) : bool =
+      of the learnt clause?
+      if so, push clauses into history. *)
+   let lit_redundant (self:t) (abstract_levels:int)
+       (v:var) (history: clause Vec.t) : bool =
      let store = self.store in
      let to_unmark = self.to_clear in
 
      (* save current state of [to_unmark] *)
      let top = Vec.size to_unmark in
-     Log.debugf 1 (fun k->k"lit.redundant v%d abstract_levels 0x%xd" (v:var:>int) abstract_levels);
+     let top_hist = Vec.size history in
+
      let rec aux v =
-       Log.debugf 1 (fun k->k"lit.redundant.aux v%d" (v:var:>int));
        match Var.reason store v with
        | None -> assert false
        | Some Decision -> raise_notrace Non_redundant
        | Some (Bcp c | Bcp_lazy (lazy c)) ->
          assert (v == Atom.var c.atoms.(0));
+         Vec.push history c; (* speculate we can remove [v] *)
          (* check that all the other lits of [c] are marked or redundant *)
          for i = 1 to Array.length c.atoms - 1 do
            let v2 = Atom.var c.atoms.(i) in
-           Log.debugf 1 (fun k->k"v2 is v%d" (v2:>int));
            if not (Var.marked store v2) && Var.level store v2 > 0 then (
              match Var.reason store v2 with
              | None -> assert false
@@ -1247,14 +1260,14 @@ module Make(Plugin : PLUGIN)
            )
          done
      in
-     try aux v; Log.debug 1 "redundant"; true
+     try aux v; true
      with Non_redundant ->
        (* clear new marks, they are not actually redundant *)
-       Log.debug 1 "non redundant";
        for i = top to Vec.size to_unmark-1 do
          Var.unmark store (Vec.get to_unmark i)
        done;
        Vec.shrink to_unmark top;
+       Vec.shrink history top_hist;
        false
 
    (* minimize conflict by removing atoms whose propagation history
@@ -1272,11 +1285,11 @@ module Make(Plugin : PLUGIN)
      let j = ref 1 in
      for i=1 to Vec.size learnt - 1 do
        let a = Vec.get learnt i in
-       let keep, c =
+       let keep =
          begin match Atom.reason store a with
-           | Some Decision -> true, None (* always keep decisions *)
+           | Some Decision -> true (* always keep decisions *)
            | Some (Bcp c | Bcp_lazy (lazy c)) ->
-             not (lit_redundant self abstract_levels (Atom.var a)), Some c
+             not (lit_redundant self abstract_levels (Atom.var a) history)
            | None -> assert false
          end
        in
@@ -1284,10 +1297,6 @@ module Make(Plugin : PLUGIN)
          Vec.set learnt !j a;
          incr j
        ) else (
-         begin match c with
-           | None -> assert false
-           | Some c -> Vec.push history c (* resolve the lit away *)
-         end;
          self.n_minimized_away <- 1 + self.n_minimized_away;
        )
      done;
