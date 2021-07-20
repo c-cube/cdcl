@@ -783,6 +783,7 @@ module Make(Plugin : PLUGIN)
     mutable n_conflicts : int;
     mutable n_propagations : int;
     mutable n_decisions : int;
+    mutable n_minimized_away : int; (* variables removed by confl minimization *)
   }
   type solver = t
 
@@ -825,6 +826,8 @@ module Make(Plugin : PLUGIN)
     n_conflicts = 0;
     n_decisions = 0;
     n_propagations = 0;
+    n_minimized_away = 0;
+
     on_conflict = None;
     on_decision= None;
     on_new_atom = None;
@@ -847,6 +850,7 @@ module Make(Plugin : PLUGIN)
   let n_propagations self = self.n_propagations
   let n_decisions self = self.n_decisions
   let n_conflicts self = self.n_conflicts
+  let n_minimized_away self = self.n_minimized_away
 
   (* Do we have a level-0 empty clause? *)
   let[@inline] check_unsat_ st =
@@ -1215,8 +1219,11 @@ module Make(Plugin : PLUGIN)
      let store = self.store in
      let to_unmark = self.to_clear in
 
+     (* save current state of [to_unmark] *)
      let top = Vec.size to_unmark in
+     Log.debugf 1 (fun k->k"lit.redundant v%d abstract_levels 0x%xd" (v:var:>int) abstract_levels);
      let rec aux v =
+       Log.debugf 1 (fun k->k"lit.redundant.aux v%d" (v:var:>int));
        match Var.reason store v with
        | None -> assert false
        | Some Decision -> raise_notrace Non_redundant
@@ -1225,6 +1232,7 @@ module Make(Plugin : PLUGIN)
          (* check that all the other lits of [c] are marked or redundant *)
          for i = 1 to Array.length c.atoms - 1 do
            let v2 = Atom.var c.atoms.(i) in
+           Log.debugf 1 (fun k->k"v2 is v%d" (v2:>int));
            if not (Var.marked store v2) && Var.level store v2 > 0 then (
              match Var.reason store v2 with
              | None -> assert false
@@ -1239,46 +1247,52 @@ module Make(Plugin : PLUGIN)
            )
          done
      in
-     try aux v; true
+     try aux v; Log.debug 1 "redundant"; true
      with Non_redundant ->
        (* clear new marks, they are not actually redundant *)
+       Log.debug 1 "non redundant";
        for i = top to Vec.size to_unmark-1 do
          Var.unmark store (Vec.get to_unmark i)
        done;
        Vec.shrink to_unmark top;
        false
 
-  (* minimize conflict by removing atoms whose propagation history
-     is ultimately self-subsuming with [lits] *)
-  let minimize_conflict (self:t) (c_level:int) (learnt: atom Vec.t) : unit =
-    let store = self.store in
-    let to_unmark = self.to_clear in
-    assert (Vec.is_empty to_unmark);
+   (* minimize conflict by removing atoms whose propagation history
+      is ultimately self-subsuming with [lits] *)
+   let minimize_conflict (self:t) (c_level:int)
+       (learnt: atom Vec.t) (history: clause Vec.t) : unit =
+     let store = self.store in
 
-    Vec.iter
-      (fun a ->
-         if Atom.level store a < c_level then (
-           Vec.push to_unmark (Atom.var a);
-           Var.mark store (Atom.var a)
-         ))
-      learnt;
+     (* abstraction of the levels involved in the conflict at all,
+        as logical "or" of each literal's approximate level *)
+     let abstract_levels =
+       Vec.fold (fun lvl a -> lvl lor abstract_level_ self (Atom.var a)) 0 learnt
+     in
 
-    (* abstraction of the levels involved in the conflict at all,
-       as logical "or" of each literal's approximate level *)
-    let abstract_levels =
-      Vec.fold (fun lvl a -> lvl lor abstract_level_ self (Atom.var a)) 0 learnt
-    in
-
-    Vec.filter_in_place
-      (fun a ->
-         Atom.level store a = c_level ||
+     let j = ref 1 in
+     for i=1 to Vec.size learnt - 1 do
+       let a = Vec.get learnt i in
+       let keep, c =
          begin match Atom.reason store a with
-           | Some Decision -> true (* always keep decisions *)
-           | _ ->
-             not (lit_redundant self abstract_levels (Atom.var a))
-         end)
-      learnt;
-    ()
+           | Some Decision -> true, None (* always keep decisions *)
+           | Some (Bcp c | Bcp_lazy (lazy c)) ->
+             not (lit_redundant self abstract_levels (Atom.var a)), Some c
+           | None -> assert false
+         end
+       in
+       if keep then (
+         Vec.set learnt !j a;
+         incr j
+       ) else (
+         begin match c with
+           | None -> assert false
+           | Some c -> Vec.push history c (* resolve the lit away *)
+         end;
+         self.n_minimized_away <- 1 + self.n_minimized_away;
+       )
+     done;
+     Vec.shrink learnt !j;
+     ()
 
   (* result of conflict analysis, containing the learnt clause and some
      additional info.
@@ -1387,11 +1401,12 @@ module Make(Plugin : PLUGIN)
       | _, (None | Some Decision) -> assert false
     done;
 
+    (* minimize conflict, to get a more general lemma *)
+    minimize_conflict self conflict_level learnt history;
+
+    (* cleanup marks *)
     Vec.iter (Store.clear_var store) to_unmark;
     Vec.clear to_unmark;
-
-    (* minimize conflict, to get a more general lemma *)
-    minimize_conflict self conflict_level learnt;
 
     (* put high-level literals first, so that:
        - they make adequate watch lits

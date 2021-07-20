@@ -448,5 +448,6 @@ module type S = sig
   val n_propagations : t -> int
   val n_decisions : t -> int
   val n_conflicts : t -> int
+  val n_minimized_away : t -> int
 end
 
