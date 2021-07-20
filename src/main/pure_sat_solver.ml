@@ -40,7 +40,7 @@ module Dimacs = struct
       E.of_exn_trace e
 end
 
-let solve (solver:SAT.t) : (unit, string) result =
+let solve ?(check=false) (solver:SAT.t) : (unit, string) result =
   let res =
     Profile.with_ "solve" (fun () -> SAT.solve solver)
   in
@@ -50,7 +50,11 @@ let solve (solver:SAT.t) : (unit, string) result =
     | SAT.Sat _ ->
       let t3 = Sys.time () -. t2 in
       Format.printf "Sat (%.3f/%.3f)@." t2 t3;
-    | SAT.Unsat _ ->
+    | SAT.Unsat (module US) ->
+
+      if check then (
+        SAT.Proof.check (SAT.store solver) (US.get_proof())
+      );
 
       let t3 = Sys.time () -. t2 in
       Format.printf "Unsat (%.3f/%.3f)@." t2 t3;

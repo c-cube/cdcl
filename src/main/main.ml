@@ -150,7 +150,7 @@ let main_cnf () : _ result =
       ~size:`Big ()
   in
   S.Dimacs.parse_file solver !file >>= fun () ->
-  let r = S.solve solver in
+  let r = S.solve ~check:!check solver in
   if !p_stat then (
     Fmt.printf
       "; n-conflicts=%d n-decisions=%d n-propagations=%d \
