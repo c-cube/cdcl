@@ -549,9 +549,16 @@ module Make(Plugin : PLUGIN)
         let ok = same_lits store (Iter.of_list res) (Clause.atoms store concl) in
         if not ok then (
           Log.debugf 0
-            (fun k->k"bad proof: res is {@[<hv>%a@]}@ expected conclusion is %a"
+            (fun k->k"bad proof: res is {@[<hv>%a@]}@ \
+                      expected conclusion is %a@ \
+                      diff is {@[%a@]}"
                 (Atom.debug_a store) (Array.of_list res)
-                (Clause.debug store) concl);
+                (Clause.debug store) concl
+                (Atom.Set.pp (Atom.debug store))
+                Atom.Set.(let s1 = of_seq (CCList.to_seq res) in
+                          let s2 = of_seq (CCList.to_seq (Clause.atoms_l store concl)) in
+                          union (diff s1 s2) (diff s2 s1))
+            );
         );
         ok)
 
